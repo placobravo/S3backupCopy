@@ -11,6 +11,7 @@
 # 	(or maybe add an option to start the job immediately after being run)
 # Check how to declare variables locally on functions
 # Check if the added job already exists
+# Add check for repository to see it exists, otherwise rclone gets stuck forever when trying to sync
 
 ############################# FUNCTIONS #############################
 typer() {
@@ -59,54 +60,70 @@ checks() {
 }
 
 # Function to always double check if the user typed the correct input
-get_variable() {
+get_input() {
+    local prompt="$2"   # The prompt text
+    local varcheck="$3" # Variable description to double check
+    local value
+
     while true; do
-        printf "$1"
-        read temp
-        declare -g "$2=$temp"
-        typer "$3 = \"${temp}\". Accept? [y/N]: "
-        read choice
-        [ "$choice" = "y" ] && return 0
+        read -p "$prompt" value
+        read -p "You entered '$value'. Is this correct? [y/n] " confirm
+        case "$confirm" in
+            Y|y ) break ;;
+            N|n ) echo "Let's try again." >&2;;
+            * ) echo "Please answer y or n." >&2;;
+        esac
     done
+
+    # Return the value to caller
+    printf '%s' "$value"
 }
 
 # This function is used to create/modify the rclone.conf file with the correct repository
 create_repo() {
+    local s3_server
+    local access_key
+    local secret_key
+    local repo_name
+
     while true; do
-        get_variable "\nInsert a custom repository name: " REPO_NAME "Repository name"
-        grep -w "$REPO_NAME" /root/.config/rclone/rclone.conf >/dev/null 2>&1 || break
+        repo_name=$(get_input repo_name "Insert a custom repository name: " "Repository name")
+        grep -w "$repo_name" /root/.config/rclone/rclone.conf >/dev/null 2>&1 || break
         sleep 1
         typer "\nThis repo already exists, please insert a different one, or quit if you want to add jobs to it.\n\n"
     done
-    get_variable "\nInsert the S3 server (https://example.com): " S3_SERVER "S3 Server"
-    get_variable "\nInsert the access key token: " ACCESS_KEY "Access key token"
-    get_variable "\nInsert the secret key token: " SECRET_KEY "Secret key"
+    s3_server=$(get_input s3_server "Insert the S3 server (https://example.com): " "S3 Server")
+    access_key=$(get_input access_key "Insert the access key token: " "Access key token")
+    secret_key=$(get_input secret_key "Insert the secret key token: " "Secret key")
     mkdir -p /root/.config/rclone/
-    cat << EOF >> /root/.config/rclone/rclone.conf
+    cat << RCLONECONF >> /root/.config/rclone/rclone.conf
 
-[$REPO_NAME]
+[$repo_name]
 type = s3
 provider = Other
-access_key_id = $ACCESS_KEY
-secret_access_key = $SECRET_KEY
-endpoint = $S3_SERVER
+access_key_id = $access_key
+secret_access_key = $secret_key
+endpoint = $s3_server
 acl = bucket-owner-full-control
 force_path_style = true
-EOF
+RCLONECONF
+
     typer "\nThe repository was succesfully added!\n"
 }
 
 # This is the function which creates the script for the backup and the corresponding systemd units
 create_job() {
-    AVAIL_REPOS=$(grep -E '^\[[^]]+\]$' /root/.config/rclone/rclone.conf 2>/dev/null | sed 's/^\[\(.*\)\]$/\1/')
-    if [ -z "$AVAIL_REPOS" ]; then
+    local avail_repos
+    local current_repo
+    avail_repos=$(grep -E '^\[[^]]+\]$' /root/.config/rclone/rclone.conf 2>/dev/null | sed 's/^\[\(.*\)\]$/\1/')
+    if [ -z "${avail_repos}" ]; then
         typer "\nYou have no repositories, first add one, then you can add jobs to it.\n"
 	return 0
     fi
-    typer "\nFirst, you need to choose a repository for your job. These are the available ones: \n${AVAIL_REPOS}\n"
+    typer "\nFirst, you need to choose a repository for your job. These are the available ones: \n${avail_repos}\n"
     while true; do
-        get_variable "\nWhich do you want to use?: " CURRENT_REPO "Repository"
-	[[ $'\n'"$AVAIL_REPOS"$'\n' =~ $'\n'"$CURRENT_REPO"$'\n' ]] && break
+        current_repo=$(get_variable current_repo "Which do you want to use?: " "Repository")
+	[[ $'\n'"${avail_repos}"$'\n' =~ $'\n'"${current_repo}"$'\n' ]] && break
         typer "The specified repository does not exist.\n"
     done
 
@@ -120,7 +137,7 @@ create_job() {
     # Replace spaces with hypens in case they are present
     JOB="${JOB// /-}"
     
-    DESTINATION="${CURRENT_REPO}:${BUCKET_NAME}/${JOB}"
+    DESTINATION="${current_repo}:${BUCKET_NAME}/${JOB}"
     
     # Create log directory if not already present
     mkdir -p /var/log/s3backupCopy
@@ -132,7 +149,7 @@ create_job() {
     mkdir -p /opt/s3backupCopy
 
     # Generate the actual copy script
-    cat << EOF > "/opt/s3backupCopy/${JOB}.sh"
+    cat << COPYSCRIPT > "/opt/s3backupCopy/${JOB}.sh"
 #!/usr/bin/env bash
 START_TIME="\$(timedatectl | grep "Local time" | awk -F': ' '{print \$2}')"
 
@@ -159,11 +176,11 @@ Total source folder size: \${TOTAL_DATA}\n\n\
 \${TRANSFERS}")"
 
 # echo "\$REPORT"
-EOF
+COPYSCRIPT
     chmod +x "/opt/s3backupCopy/${JOB}.sh"
 
     # Create systemd service for the job
-    cat << EOF > "/etc/systemd/system/s3backupCopy_${JOB}.service"
+    cat << SYSTEMDSERVICE > "/etc/systemd/system/s3backupCopy_${JOB}.service"
 [Unit]
 Description=Backup copy job for $FULLPATH_FOLDER
 
@@ -174,7 +191,7 @@ Restart=no
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SYSTEMDSERVICE
     # Ask user about scheduling
     typer "\nWhen do you want to execute this job?"
     typer "\nThis is the syntax:"
@@ -198,7 +215,7 @@ EOF
     done
 
     # Create systemd timer for service
-    cat << EOF > "/etc/systemd/system/s3backupCopy_${JOB}.timer"
+    cat << SYSTEMDTIMER > "/etc/systemd/system/s3backupCopy_${JOB}.timer"
 [Unit]
 Description=Backup copy job timer for '${JOB}.service'
 
@@ -208,7 +225,8 @@ Persistent=false
 
 [Install]
 WantedBy=timers.target
-EOF
+SYSTEMDTIMER
+
     typer "Do you want to enable this job? [y/N]: "
     read choice
     if [ "$choice" = "y" ]; then
@@ -221,24 +239,24 @@ EOF
 
 # Function to list all the jobs, both active and inactive
 list_jobs() {
-    local INACTIVES
-    local ACTIVES
+    local inactives
+    local actives
     local active_job
     local inactive_job
     for x in $(ls /etc/systemd/system/s3backupCopy_*.timer 2>/dev/null); do
 	[[ "$(systemctl status $(basename $x))" == *"Active: inactive"* ]] && \
-	   inactive_job=$(echo $x | sed 's/.*s3backupCopy_//')
-            INACTIVES+=("${inactive_job%.*}")
+	    inactive_job=$(echo $x | sed 's/.*s3backupCopy_//')
+        inactives+=("${inactive_job%.*}")
 	[[ "$(systemctl status $(basename $x))" == *"Active: active"* ]] && \
 	   active_job=$(echo $x | sed 's/.*s3backupCopy_//')
-	   ACTIVES+=("${active_job##*/}")
+	   actives+=("${active_job##*/}")
     done
     typer "\nThese are the active jobs:\n"
-    for item in ${ACTIVES[@]}; do
+    for item in ${actives[@]}; do
         typer "${item}\n"
     done
     typer "\nThese are the inactive jobs:\n"
-    for item in ${INACTIVES[@]}; do
+    for item in ${inactives[@]}; do
         typer "${item}\n"
     done
 
@@ -252,29 +270,39 @@ list_repositories() {
 }
 
 remove_job() {
-    local job
-    local to_delete
-
     echo -e "\nThose are the current jobs:"
     for x in $(ls /etc/systemd/system/s3backupCopy_*.timer 2>/dev/null); do
-	job=$(echo $x | sed 's/.*s3backupCopy_//')
-	typer "${job%.*}\n"
+	    job=$(echo $x | sed 's/.*s3backupCopy_//')
+	    typer "${job%.*}\n"
     done
+
     get_variable "\nWhich one do you want to delete?: " toDelete "Job"
-    # TODO check if the job exists (needs to be accurate or could risk removing some other files)
+    if ! systemctl cat s3backupCopy_${toDelete} >/dev/null 2>&1; then
+        typer "The specified job \"${toDelete}\" does not exist.\n"
+        return 1
+    fi
+
     typer "Deleting this job will also remove any log associated with it.\n\
 Do you wish to continue? [y/N]: "
     read choice 
     [ $choice = "y" ] || return 1
 
-    # TODO check if the job is currently running
-    systemctl stop "/etc/systemd/system/s3backupCopy_${toDelete}.timer" >/dev/null 2>&1
-    systemctl disable "/etc/systemd/system/s3backupCopy_${toDelete}.timer" >/dev/null 2>&1
+    if systemctl is-active --quiet s3backupCopy_${toDelete}.service; then
+        typer "Job \"${toDelete}\" is currently running. Wait for it to finish or stop it manually.\n"
+        return 1
+    fi
+
+    systemctl stop "s3backupCopy_${toDelete}.timer" >/dev/null 2>&1
+    systemctl disable "s3backupCopy_${toDelete}.timer" >/dev/null 2>&1
     rm "/etc/systemd/system/s3backupCopy_${toDelete}.timer" 2>/dev/null
     rm "/etc/systemd/system/s3backupCopy_${toDelete}.service" 2>/dev/null
     rm "/opt/s3backupCopy/${toDelete}.sh" 2>/dev/null
     systemctl daemon-reload >/dev/null 2>&1
     rm "/var/log/s3backupCopy/${toDelete}.log" 2>/dev/null
+    typer "Job \"${toDelete}\" removed correctly!\n"
+
+    unset job
+    unset toDelete
 }
 
 menu() {
@@ -347,3 +375,6 @@ checks
 
 # Interactive menu
 menu 
+
+echo $toDelete
+echo $access_key
