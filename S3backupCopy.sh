@@ -47,7 +47,7 @@ get_input() {
     local varcheck="$3" # Description of the variable to double check
     local value
 
-    # Redirect all text to stderr, except the last prinf which 
+    # Redirect all text to stderr, except the last printf which 
     # acts as a return string
     while true; do
         typer "${prompt}" >&2
@@ -101,61 +101,68 @@ RCLONECONF
 create_job() {
     local avail_repos
     local current_repo
+    local bucket_name
+    local fullpath_folder
+    local toadd_job
+    local destination
+    local log_file
+    local next_run
+
     avail_repos=$(grep -E '^\[[^]]+\]$' /root/.config/rclone/rclone.conf 2>/dev/null | sed 's/^\[\(.*\)\]$/\1/')
     if [ -z "${avail_repos}" ]; then
         typer "\nYou have no repositories, first add one, then you can add jobs to it.\n"
-	return 0
+	    return 1
     fi
     typer "\nFirst, you need to choose a repository for your job. These are the available ones: \n${avail_repos}\n"
     while true; do
-        current_repo=$(get_input current_repo "Which do you want to use?: " "Repository")
-	[[ $'\n'"${avail_repos}"$'\n' =~ $'\n'"${current_repo}"$'\n' ]] && break
+        current_repo=$(get_input current_repo "\nWhich do you want to use?: " "Repository")
+	    [[ $'\n'"${avail_repos}"$'\n' =~ $'\n'"${current_repo}"$'\n' ]] && break
         typer "The specified repository does not exist.\n"
     done
 
     # TODO LET THE USER CHOOSE/SEE THE CURRENT BUCKETS
-    BUCKET_NAME=$(get_input BUCKET_NAME "\nInsert the bucket name:" "Bucket")
-    FULLPATH_FOLDER=$(get_input FULLPATH_FOLDER "\nInsert the full path of the folder you want to backup: " "Folder path")
+    bucket_name=$(get_input bucket_name "\nInsert the bucket name: " "Bucket")
+    fullpath_folder=$(get_input fullpath_folder "\nInsert the full path of the folder you want to backup: " "Folder path")
     # TODO CHECK IF FOLDER EXISTS AND ASK FOR CONFIRMATION
         # TODO Should also check if pheraps there is already a job for that folder
-    JOB="$(basename "$FULLPATH_FOLDER")"
+    toadd_job="$(basename "$fullpath_folder")"
 
     # Replace spaces with hypens in case they are present
-    JOB="${JOB// /-}"
+    toadd_job="${toadd_job// /-}"
     
-    DESTINATION="${current_repo}:${BUCKET_NAME}/${JOB}"
+    destination="${current_repo}:${bucket_name}/${toadd_job}"
     
     # Create log directory if not already present
     mkdir -p /var/log/s3backupCopy
 
     # Log file
-    LOG_FILE="/var/log/s3backupCopy/${JOB}.log"
+    log_file="/var/log/s3backupCopy/${toadd_job}.log"
     
     # Create scripts directory if not already present
     mkdir -p /opt/s3backupCopy
 
     # Generate the actual copy script
-    cat << COPYSCRIPT > "/opt/s3backupCopy/${JOB}.sh"
+    cat << COPYSCRIPT > "/opt/s3backupCopy/${toadd_job}.sh"
 #!/usr/bin/env bash
 START_TIME="\$(timedatectl | grep "Local time" | awk -F': ' '{print \$2}')"
 
-rclone sync --progress --log-file "${LOG_FILE}" --log-level INFO --progress-terminal-title "$FULLPATH_FOLDER" "$DESTINATION"
-rclone check --size-only "${FULLPATH_FOLDER}" "${DESTINATION}"
+rclone sync --progress --log-file "${log_file}" --log-level INFO --progress-terminal-title "$fullpath_folder" "$destination"
+rclone check --size-only "${fullpath_folder}" "${destination}"
 
 EXIT_STATUS=\$?
 LAST_TIME="\$(timedatectl | grep "Local time" | awk -F': ' '{print \$2}')"
 
 if [ \$EXIT_STATUS -eq 0 ]; then
     STATUS="Success"
-    TRANSFERS="\$(cat ${LOG_FILE} | awk '/INFO/{last=NR} {lines[NR]=\$0} END{for(i=last+1;i<=NR;i++) print lines[i]}')"
+    TRANSFERS="\$(cat ${log_file} | awk '/INFO/{last=NR} {lines[NR]=\$0} END{for(i=last+1;i<=NR;i++) print lines[i]}')"
 else
     TRANSFERS=""
     STATUS="Failed"
 fi
 
-TOTAL_DATA="\$(du -hs "${FULLPATH_FOLDER}" | awk '{print \$1}')"
+TOTAL_DATA="\$(du -hs "${fullpath_folder}" | awk '{print \$1}')"
  
-REPORT="\$(printf "Subject: [\${STATUS}] S3BackupCopy ${JOB}\n\n\
+REPORT="\$(printf "Subject: [\${STATUS}] S3BackupCopy ${toadd_job}\n\n\
 Job started at \${START_TIME}\n\n\
 Job ended with \${STATUS} at \${LAST_TIME}\n\n\
 Total source folder size: \${TOTAL_DATA}\n\n\
@@ -163,16 +170,16 @@ Total source folder size: \${TOTAL_DATA}\n\n\
 
 # echo "\$REPORT"
 COPYSCRIPT
-    chmod +x "/opt/s3backupCopy/${JOB}.sh"
+    chmod +x "/opt/s3backupCopy/${toadd_job}.sh"
 
     # Create systemd service for the job
-    cat << SYSTEMDSERVICE > "/etc/systemd/system/s3backupCopy_${JOB}.service"
+    cat << SYSTEMDSERVICE > "/etc/systemd/system/s3backupCopy_${toadd_job}.service"
 [Unit]
-Description=Backup copy job for $FULLPATH_FOLDER
+Description=Backup copy job for $fullpath_folder
 
 [Service]
 Type=simple
-ExecStart="/opt/s3backupCopy/${JOB}.sh"
+ExecStart="/opt/s3backupCopy/${toadd_job}.sh"
 Restart=no
 
 [Install]
@@ -186,27 +193,27 @@ SYSTEMDSERVICE
 
     while true; do
         typer "Specify a scheduling time:\n"
-	read SCHEDULING
-	NEXT_RUN=$(systemd-analyze calendar --iterations 5 "${SCHEDULING}" 2>/dev/null)
-	if [ $? -eq 0 ]; then
-	   typer "\nThose would be the next 5 scheduling for the job:\n"
-	   printf "${NEXT_RUN}\n"
-	   typer "Is this ok? [y/N]: "
-	   read choice
-	   [ "$choice" = "y" ] && break
-	   printf "\n"
+	    read scheduling
+	    next_run=$(systemd-analyze calendar --iterations 5 "${scheduling}" 2>/dev/null)
+	    if [ $? -eq 0 ]; then
+	       typer "\nThose would be the next 5 scheduling for the job:\n"
+	       printf "${next_run}\n"
+	       typer "Is this ok? [y/N]: "
+	       read choice
+	       [ "$choice" = "y" ] && break
+	       printf "\n"
         else
-	   typer "\nThe scheduling is not correct, please try again.\n"
-	fi
+	       typer "\nThe scheduling is not correct, please try again.\n"
+	    fi
     done
 
     # Create systemd timer for service
-    cat << SYSTEMDTIMER > "/etc/systemd/system/s3backupCopy_${JOB}.timer"
+    cat << SYSTEMDTIMER > "/etc/systemd/system/s3backupCopy_${toadd_job}.timer"
 [Unit]
-Description=Backup copy job timer for '${JOB}.service'
+Description=Backup copy job timer for 's3backupCopy_${toadd_job}.service'
 
 [Timer]
-OnCalendar=${SCHEDULING}
+OnCalendar=${scheduling}
 Persistent=false
 
 [Install]
@@ -216,10 +223,10 @@ SYSTEMDTIMER
     typer "Do you want to enable this job? [y/N]: "
     read choice
     if [ "$choice" = "y" ]; then
-        systemctl enable --now "s3backupCopy_${JOB}.timer" >/dev/null 2>&1
-        typer "\nJob ${JOB} was added and enabled succesfully!\n"
+        systemctl enable --now "s3backupCopy_${toadd_job}.timer" >/dev/null 2>&1
+        typer "\nJob \"${toadd_job}\" was added and enabled succesfully!\n"
     else
-	typer "Job ${JOB} was added succesfully but not enabled!\n" 
+	    typer "Job \"${toadd_job}\" was added succesfully but not enabled!\n" 
     fi
 }
 
@@ -267,6 +274,9 @@ list_repositories() {
 }
 
 remove_job() {
+    local job
+    local toDelete
+
     echo -e "\nThose are the current jobs:"
     for x in $(ls /etc/systemd/system/s3backupCopy_*.timer 2>/dev/null); do
 	    job=$(echo $x | sed 's/.*s3backupCopy_//')
@@ -279,8 +289,7 @@ remove_job() {
         return 1
     fi
 
-    typer "Deleting this job will also remove any log associated with it.\n\
-Do you wish to continue? [y/N]: "
+    typer "Deleting this job will also remove any log associated with it.\nDo you wish to continue? [y/N]: "
     read choice 
     [ $choice = "y" ] || return 1
 
@@ -297,9 +306,6 @@ Do you wish to continue? [y/N]: "
     systemctl daemon-reload >/dev/null 2>&1
     rm "/var/log/s3backupCopy/${toDelete}.log" 2>/dev/null
     typer "Job \"${toDelete}\" removed correctly!\n"
-
-    unset job
-    unset toDelete
 }
 
 
