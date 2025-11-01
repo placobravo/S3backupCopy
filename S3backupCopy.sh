@@ -2,21 +2,16 @@
 # TODO
 # Cleanup Function
 # Various checks if folder paths or name exist (like bucket, repo, etc...)
-# Fancier menu with rhytm entries
-# Missing menu entries
+# Autocomplete for read
 # Rotate logs
-# Add option to rename repository
-# Difference between active jobs, enabled jobs and running jobs
-# Add option to manually start a job and then enable it later 
-# 	(or maybe add an option to start the job immediately after being run)
-# Check how to declare variables locally on functions
 # Check if the added job already exists
 # Add check for repository to see it exists, otherwise rclone gets stuck forever when trying to sync
 
 ############################# FUNCTIONS #############################
+
+# Function used to make printing of text a little fancier,
+# as it being typed in real time
 typer() {
-    # Function used to make printing of text a little fancier,
-    # as it being typed in real time
     
     local speed=0.018
     
@@ -46,32 +41,23 @@ typer() {
     unset OPTIND flag
 }
 
-checks() {
-    # Check if user is root, exit otherwise
-    if [ "$(whoami)" != "root" ]; then
-        typer "\nYou need to be root to execute this script.\n" && exit 126
-    fi
-
-    # Check if rclone is installed
-    if ! which rclone >/dev/null 2>&1; then
-        typer "\nRclone is needed to execute this script.\n"
-	exit 1
-    fi
-}
-
 # Function to always double check if the user typed the correct input
 get_input() {
     local prompt="$2"   # The prompt text
-    local varcheck="$3" # Variable description to double check
+    local varcheck="$3" # Description of the variable to double check
     local value
 
+    # Redirect all text to stderr, except the last prinf which 
+    # acts as a return string
     while true; do
-        read -p "$prompt" value
-        read -p "You entered '$value'. Is this correct? [y/n] " confirm
-        case "$confirm" in
+        typer "${prompt}" >&2
+        read value
+        typer "${varcheck} = \"${value}\". Is this correct? [y/n]: " >&2
+        read confirm
+        case "${confirm}" in
             Y|y ) break ;;
-            N|n ) echo "Let's try again." >&2;;
-            * ) echo "Please answer y or n." >&2;;
+            N|n ) typer "Let's try again.\n" >&2;;
+            * ) typer "Please answer y or n.\n" >&2;;
         esac
     done
 
@@ -79,7 +65,7 @@ get_input() {
     printf '%s' "$value"
 }
 
-# This function is used to create/modify the rclone.conf file with the correct repository
+# This function is used to create/modify the rclone.conf file with a new repository
 create_repo() {
     local s3_server
     local access_key
@@ -122,14 +108,14 @@ create_job() {
     fi
     typer "\nFirst, you need to choose a repository for your job. These are the available ones: \n${avail_repos}\n"
     while true; do
-        current_repo=$(get_variable current_repo "Which do you want to use?: " "Repository")
+        current_repo=$(get_input current_repo "Which do you want to use?: " "Repository")
 	[[ $'\n'"${avail_repos}"$'\n' =~ $'\n'"${current_repo}"$'\n' ]] && break
         typer "The specified repository does not exist.\n"
     done
 
     # TODO LET THE USER CHOOSE/SEE THE CURRENT BUCKETS
-    get_variable "\nInsert the bucket name:" BUCKET_NAME "Bucket"
-    get_variable "\nInsert the full path of the folder you want to backup: " FULLPATH_FOLDER "Folder path"
+    BUCKET_NAME=$(get_input BUCKET_NAME "\nInsert the bucket name:" "Bucket")
+    FULLPATH_FOLDER=$(get_input FULLPATH_FOLDER "\nInsert the full path of the folder you want to backup: " "Folder path")
     # TODO CHECK IF FOLDER EXISTS AND ASK FOR CONFIRMATION
         # TODO Should also check if pheraps there is already a job for that folder
     JOB="$(basename "$FULLPATH_FOLDER")"
@@ -239,17 +225,28 @@ SYSTEMDTIMER
 
 # Function to list all the jobs, both active and inactive
 list_jobs() {
-    local inactives
+    local running_list
+    local running_job
     local actives
     local active_job
+    local inactives
     local inactive_job
+
+    running_list=$(systemctl list-units --state=running --no-pager --no-legend | grep s3backupCopy | grep loaded | awk '{print $1}' | grep service)
+    typer "\nThese are the running jobs:\n"
+    for x in ${running_list}; do
+        running_job=$(echo "$x" | sed 's/.*s3backupCopy_//')
+        typer "${running_job%.*}\n"
+    done
+
     for x in $(ls /etc/systemd/system/s3backupCopy_*.timer 2>/dev/null); do
-	[[ "$(systemctl status $(basename $x))" == *"Active: inactive"* ]] && \
-	    inactive_job=$(echo $x | sed 's/.*s3backupCopy_//')
-        inactives+=("${inactive_job%.*}")
-	[[ "$(systemctl status $(basename $x))" == *"Active: active"* ]] && \
-	   active_job=$(echo $x | sed 's/.*s3backupCopy_//')
-	   actives+=("${active_job##*/}")
+        if [[ "$(systemctl status $(basename $x))" == *"Active: active"* ]]; then
+    	    active_job=$(echo $x | sed 's/.*s3backupCopy_//')
+    	    actives+=("${active_job%.*}")
+    	elif [[ "$(systemctl status $(basename $x))" == *"Active: inactive"* ]]; then
+    	    inactive_job=$(echo $x | sed 's/.*s3backupCopy_//')
+            inactives+=("${inactive_job%.*}")
+        fi
     done
     typer "\nThese are the active jobs:\n"
     for item in ${actives[@]}; do
@@ -260,7 +257,7 @@ list_jobs() {
         typer "${item}\n"
     done
 
-    typer "\nTo analyze them use 'systemctl status <job_name>.timer' and 'systemctl status <job_name>.timer'\n"
+    typer "\nTo analyze them use 'systemctl status <job_name>.timer' and 'systemctl status <job_name>.service'\n"
     typer "You can find the logs at '/var/log/s3backupCopy/<job_name>.log'\n"
 }
 
@@ -276,7 +273,7 @@ remove_job() {
 	    typer "${job%.*}\n"
     done
 
-    get_variable "\nWhich one do you want to delete?: " toDelete "Job"
+    toDelete=$(get_variable toDelete "\nWhich one do you want to delete?: " "Job")
     if ! systemctl cat s3backupCopy_${toDelete} >/dev/null 2>&1; then
         typer "The specified job \"${toDelete}\" does not exist.\n"
         return 1
@@ -305,58 +302,6 @@ Do you wish to continue? [y/N]: "
     unset toDelete
 }
 
-menu() {
-    while true; do
-	printf "\n\n\n"
-        echo "--------------------------------------"
-        echo "-               MENU                 -"
-        echo "--------------------------------------"
-        echo "1) Add a new repository"
-        echo "2) Add jobs to an existing repository"
-        echo "3) List current jobs"
-        echo "4) List current repositories"
-        echo "5) Remove a repository"
-        echo "6) Remove a job"
-        echo "7) Disable a job"
-        echo "8) Reschedule a job"
-	echo "9) Quit"
-        typer "Choose an option [1-9]: "
-
-        read choice
-        case $choice in
-            1)
-	       create_repo
-		;;
-	   2)
-	       create_job
-		;;
-	   3)
-		list_jobs
-		;;
-	   4)
-		list_repositories
-		;;
-	   5)
-		typer "Not implented yet"
-		;;
-	   6)
-		remove_job
-		;;
-	   7)
-		typer "Not implented yet"
-		;;
-	   8)
-		typer "Not implented yet"
-		;;
-	   9)
-	       return 0
-		;;
-	   *)
-		continue
-		;;
-        esac
-    done
-}
 
 ############################# SCRIPT #############################
 cat << "EOF"
@@ -371,10 +316,54 @@ cat << "EOF"
 EOF
 
 # Checks for root and dependencies
-checks
+if [ "$(whoami)" != "root" ]; then
+    typer "\nYou need to be root to execute this script.\n" && exit 126
+fi
+
+# Check if rclone is installed
+if ! which rclone >/dev/null 2>&1; then
+    typer "\nRclone is needed to execute this script.\n"
+exit 1
+fi
+
 
 # Interactive menu
-menu 
+while true; do
+    cat << DYNMENU
 
-echo $toDelete
-echo $access_key
+--------------------------------------
+-               MENU                 -
+--------------------------------------
+1) Add a new repository
+2) Create new job
+3) List current jobs
+4) List current repositories
+5) Remove a job
+6) Quit
+DYNMENU
+    typer "Choose an option [1-6]: "
+        read choice
+        case $choice in
+            1)
+             create_repo
+             ;;
+            2)
+             create_job
+             ;;
+            3)
+             list_jobs
+             ;;
+            4)
+             list_repositories
+             ;;
+            5)
+             remove_job
+             ;;
+            6)
+             exit
+             ;;
+            *)
+             continue
+             ;;
+        esac
+done
