@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
 # TODO
 # Cleanup Function
-# Various checks if folder paths or name exist (like bucket, repo, etc...)
-# Autocomplete for read
+# split add_job function
 # Rotate logs
-# Check if the added job already exists
 # Add check for repository to see it exists, otherwise rclone gets stuck forever when trying to sync
+# Need to find a way to see if a job is stuck (for example if the bucket gets removed or the repo is not reachable)
 
 ############################# FUNCTIONS #############################
 
 # Function used to make printing of text a little fancier,
 # as it being typed in real time
 typer() {
-    
     local speed=0.018
     
     while getopts "s:" flag; do
@@ -51,7 +49,7 @@ get_input() {
     # acts as a return string
     while true; do
         typer "${prompt}" >&2
-        read value
+        read -e value
         typer "${varcheck} = \"${value}\". Is this correct? [y/n]: " >&2
         read confirm
         case "${confirm}" in
@@ -100,6 +98,7 @@ RCLONECONF
 # This is the function which creates the script for the backup and the corresponding systemd units
 create_job() {
     local avail_repos
+    local avail_repos_array
     local current_repo
     local bucket_name
     local fullpath_folder
@@ -107,29 +106,73 @@ create_job() {
     local destination
     local log_file
     local next_run
+    local buckets
+    local buckets_array
 
     avail_repos=$(grep -E '^\[[^]]+\]$' /root/.config/rclone/rclone.conf 2>/dev/null | sed 's/^\[\(.*\)\]$/\1/')
     if [ -z "${avail_repos}" ]; then
         typer "\nYou have no repositories, first add one, then you can add jobs to it.\n"
 	    return 1
+    else
+        for repo in "${avail_repos}"; do
+            avail_repos_array+=($repo)
+        done
     fi
-    typer "\nFirst, you need to choose a repository for your job. These are the available ones: \n${avail_repos}\n"
-    while true; do
-        current_repo=$(get_input current_repo "\nWhich do you want to use?: " "Repository")
-	    [[ $'\n'"${avail_repos}"$'\n' =~ $'\n'"${current_repo}"$'\n' ]] && break
-        typer "The specified repository does not exist.\n"
+
+    typer "\nFirst, you need to choose a repository for your job. These are the available ones:\n"
+    select current_repo in "${avail_repos_array[@]}"; do
+        if [[ -n "${current_repo}" ]]; then
+            typer "Repository: \"${current_repo}\"\n"
+            break
+        else
+           typer "Invalid choice.\n"
+        fi
     done
 
-    # TODO LET THE USER CHOOSE/SEE THE CURRENT BUCKETS
-    bucket_name=$(get_input bucket_name "\nInsert the bucket name: " "Bucket")
-    fullpath_folder=$(get_input fullpath_folder "\nInsert the full path of the folder you want to backup: " "Folder path")
-    # TODO CHECK IF FOLDER EXISTS AND ASK FOR CONFIRMATION
-        # TODO Should also check if pheraps there is already a job for that folder
-    toadd_job="$(basename "$fullpath_folder")"
+    buckets="$(rclone lsd ${current_repo}: 2>/dev/null)"
+    if [ $? -ne 0 ]; then
+        typer "There is an error with this repo, please try again.\n"
+        return 1
+    fi
+    typer "Fetching available buckets...\n"
+    for x in "${buckets}"; do
+        buckets_array+=( $(echo "${x}" | awk '{print $5}') )
+    done
+    typer "Select a bucket:\n"
+    select bucket_name in "${buckets_array[@]}"; do
+        if [[ -n "${bucket_name}" ]]; then
+            typer "Bucket: \"${bucket_name}\"\n"
+            break
+        else
+           typer "Invalid choice.\n"
+        fi
+    done
+
+    while true; do
+        fullpath_folder=$(get_input fullpath_folder "\nInsert the full path of the folder you want to backup: " "Folder path")
+        # Check that folder is an absolute path and it exists
+        if ls "${fullpath_folder}" >/dev/null 2>&1 && [[ "${fullpath_folder}" == /* ]]; then
+            break
+        fi
+        typer "The current folder does not exist or it is not an absolute path. Try again.\n"
+    done
 
     # Replace spaces with hypens in case they are present
-    toadd_job="${toadd_job// /-}"
-    
+    toadd_job="${fullpath_folder// /-}"
+
+    # Replaces "/" with "_"
+    toadd_job="${toadd_job//\//_}"
+
+    # Remove the first "_" for easier readability
+    toadd_job="${toadd_job/_/}"
+
+    # Remove the last char (which is "_") for easier readability
+    toadd_job="${toadd_job::-1}"
+
+    if ls "/etc/systemd/system/s3backupCopy_${toadd_job}.service" >/dev/null 2>&1; then
+        typer "There is already a job with this folder. Skipping...\n"
+        return 1
+    fi
     destination="${current_repo}:${bucket_name}/${toadd_job}"
     
     # Create log directory if not already present
@@ -275,37 +318,45 @@ list_repositories() {
 
 remove_job() {
     local job
-    local toDelete
+    local job_array
+    local to_delete
 
-    echo -e "\nThose are the current jobs:"
     for x in $(ls /etc/systemd/system/s3backupCopy_*.timer 2>/dev/null); do
 	    job=$(echo $x | sed 's/.*s3backupCopy_//')
-	    typer "${job%.*}\n"
+        job_array+=("${job%.*}")
     done
-
-    toDelete=$(get_variable toDelete "\nWhich one do you want to delete?: " "Job")
-    if ! systemctl cat s3backupCopy_${toDelete} >/dev/null 2>&1; then
-        typer "The specified job \"${toDelete}\" does not exist.\n"
-        return 1
+    if [ ${#job_array[@]} -eq 0 ]; then
+        typer "There are no jobs.\n"
+        return 0
     fi
+
+    typer "\nThose are the current jobs:\nWhich one do you want to delete?\n"
+    select to_delete in "${job_array[@]}"; do
+        if [[ -n "${to_delete}" ]]; then
+            typer "Job to delete: \"${to_delete}\"\n"
+            break
+        else
+           typer "Invalid choice.\n"
+        fi
+    done
 
     typer "Deleting this job will also remove any log associated with it.\nDo you wish to continue? [y/N]: "
     read choice 
     [ $choice = "y" ] || return 1
 
-    if systemctl is-active --quiet s3backupCopy_${toDelete}.service; then
-        typer "Job \"${toDelete}\" is currently running. Wait for it to finish or stop it manually.\n"
+    if systemctl is-active --quiet s3backupCopy_${to_delete}.service; then
+        typer "Job \"${to_delete}\" is currently running. Wait for it to finish or stop it manually.\n"
         return 1
     fi
 
-    systemctl stop "s3backupCopy_${toDelete}.timer" >/dev/null 2>&1
-    systemctl disable "s3backupCopy_${toDelete}.timer" >/dev/null 2>&1
-    rm "/etc/systemd/system/s3backupCopy_${toDelete}.timer" 2>/dev/null
-    rm "/etc/systemd/system/s3backupCopy_${toDelete}.service" 2>/dev/null
-    rm "/opt/s3backupCopy/${toDelete}.sh" 2>/dev/null
+    systemctl stop "s3backupCopy_${to_delete}.timer" >/dev/null 2>&1
+    systemctl disable "s3backupCopy_${to_delete}.timer" >/dev/null 2>&1
+    rm "/etc/systemd/system/s3backupCopy_${to_delete}.timer" 2>/dev/null
+    rm "/etc/systemd/system/s3backupCopy_${to_delete}.service" 2>/dev/null
+    rm "/opt/s3backupCopy/${to_delete}.sh" 2>/dev/null
     systemctl daemon-reload >/dev/null 2>&1
-    rm "/var/log/s3backupCopy/${toDelete}.log" 2>/dev/null
-    typer "Job \"${toDelete}\" removed correctly!\n"
+    rm "/var/log/s3backupCopy/${to_delete}.log" 2>/dev/null
+    typer "Job \"${to_delete}\" removed correctly!\n"
 }
 
 
@@ -366,6 +417,7 @@ DYNMENU
              remove_job
              ;;
             6)
+             typer "Bye!\n"
              exit
              ;;
             *)
