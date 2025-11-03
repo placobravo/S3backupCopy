@@ -7,6 +7,7 @@
 # Need to find a way to see if a job is stuck (for example if the bucket gets removed or the repo is not reachable)
 
 ############################# FUNCTIONS #############################
+# Variables that start with underscore "_" sign are present only inside heredocs
 
 # Function used to make printing of text a little fancier,
 # as it being typed in real time
@@ -129,12 +130,12 @@ create_job() {
         fi
     done
 
+    typer "Fetching available buckets...\n"
     buckets="$(rclone lsd ${current_repo}: 2>/dev/null)"
     if [ $? -ne 0 ]; then
         typer "There is an error with this repo, please try again.\n"
         return 1
     fi
-    typer "Fetching available buckets...\n"
     for x in "${buckets}"; do
         buckets_array+=( $(echo "${x}" | awk '{print $5}') )
     done
@@ -167,7 +168,7 @@ create_job() {
     toadd_job="${toadd_job/_/}"
 
     # Remove the last char (which is "_") for easier readability
-    toadd_job="${toadd_job::-1}"
+    toadd_job="${toadd_job%_}"
 
     if ls "/etc/systemd/system/s3backupCopy_${toadd_job}.service" >/dev/null 2>&1; then
         typer "There is already a job with this folder. Skipping...\n"
@@ -187,31 +188,37 @@ create_job() {
     # Generate the actual copy script
     cat << COPYSCRIPT > "/opt/s3backupCopy/${toadd_job}.sh"
 #!/usr/bin/env bash
-START_TIME="\$(timedatectl | grep "Local time" | awk -F': ' '{print \$2}')"
-
-rclone sync --progress --log-file "${log_file}" --log-level INFO --progress-terminal-title "$fullpath_folder" "$destination"
-rclone check --size-only "${fullpath_folder}" "${destination}"
-
-EXIT_STATUS=\$?
-LAST_TIME="\$(timedatectl | grep "Local time" | awk -F': ' '{print \$2}')"
-
-if [ \$EXIT_STATUS -eq 0 ]; then
-    STATUS="Success"
-    TRANSFERS="\$(cat ${log_file} | awk '/INFO/{last=NR} {lines[NR]=\$0} END{for(i=last+1;i<=NR;i++) print lines[i]}')"
+rclone lsd "${current_repo}":"${bucket_name}" >/dev/null 2>&1
+if [ \$? -ne 0 ]; then
+    _report="\$(printf "Subject: [Failed] S3BackupCopy ${toadd_job}\n\nThere was an error trying to reach the repository or the bucket.")"
+    _error="1"
 else
-    TRANSFERS=""
-    STATUS="Failed"
+    _start_time="\$(timedatectl | grep "Local time" | awk -F': ' '{print \$2}')"
+    
+    rclone sync --progress --log-file "${log_file}" --log-level INFO --progress-terminal-title "$fullpath_folder" "$destination"
+    rclone check --size-only "${fullpath_folder}" "${destination}"
+    
+    _exit_status=\$?
+    _last_time="\$(timedatectl | grep "Local time" | awk -F': ' '{print \$2}')"
+    _total_data="\$(du -hs "${fullpath_folder}" | awk '{print \$1}')"
+    
+    if [ \${_exit_status} -eq 0 ]; then
+        _transfers="\$(cat ${log_file} | awk '/INFO/{last=NR} {lines[NR]=\$0} END{for(i=last+1;i<=NR;i++) print lines[i]}' | head -n 1 | awk '{print \$1,\$2,\$3,\$4,\$5,\$6,\$7}')"
+        _elapsed="\$(cat ${log_file} | awk '/INFO/{last=NR} {lines[NR]=\$0} END{for(i=last+1;i<=NR;i++) print lines[i]}' | tail -n 2)"
+        _misc="\$(cat ${log_file} | awk '/INFO/{last=NR} {lines[NR]=\$0} END{for(i=last+1;i<=NR;i++) print lines[i]}' | tail -n +2 | head -n -2)"
+        _report="\$(echo -e "Subject: [Success] S3BACKUPCOPY ${toadd_job}\n\nJob ended with status: Success\n\n\${_start_time}    JOB START TIME\n\${_last_time}    JOB END TIME\n\n\${_transfers} in \${_elapsed}\n\nTotal source folder size: \${_total_data}\n\${_misc}")"
+        _error="0"
+    
+    else
+        _report="\$(echo -e "Subject: [Failed] S3BACKUPCOPY ${toadd_job}\n\nJob ended with status: Failed\n\n\${_start_time}    JOB START TIME\n\${_last_time}    JOB END TIME\n\nTotal source folder size: \${_total_data}\nCheck the logs to see the error.")"
+        _error="1"
+    fi
 fi
 
-TOTAL_DATA="\$(du -hs "${fullpath_folder}" | awk '{print \$1}')"
- 
-REPORT="\$(printf "Subject: [\${STATUS}] S3BackupCopy ${toadd_job}\n\n\
-Job started at \${START_TIME}\n\n\
-Job ended with \${STATUS} at \${LAST_TIME}\n\n\
-Total source folder size: \${TOTAL_DATA}\n\n\
-\${TRANSFERS}")"
+# echo "\${_report}" 
 
-# echo "\$REPORT"
+exit \${_error}
+
 COPYSCRIPT
     chmod +x "/opt/s3backupCopy/${toadd_job}.sh"
 
