@@ -51,12 +51,11 @@ get_input() {
     while true; do
         typer "${prompt}" >&2
         read -e value
-        typer "${varcheck} = \"${value}\". Is this correct? [y/n]: " >&2
+        typer "${varcheck} = \"${value}\". Is this correct? [y/N]: " >&2
         read confirm
         case "${confirm}" in
             Y|y ) break ;;
-            N|n ) typer "Let's try again.\n" >&2;;
-            * ) typer "Please answer y or n.\n" >&2;;
+            * ) typer "Let's try again.\n" >&2;;
         esac
     done
 
@@ -109,6 +108,9 @@ create_job() {
     local next_run
     local buckets
     local buckets_array
+    local job
+    local job_array
+    local custom_job
 
     avail_repos=$(grep -E '^\[[^]]+\]$' /root/.config/rclone/rclone.conf 2>/dev/null | sed 's/^\[\(.*\)\]$/\1/')
     if [ -z "${avail_repos}" ]; then
@@ -158,6 +160,17 @@ create_job() {
         typer "The current folder does not exist or it is not an absolute path. Try again.\n"
     done
 
+    # Remove the last "/" if present
+    fullpath_folder="${fullpath_folder%/}"
+
+    # Check if a job with the given fullpath_folder already exists
+    for item in $(ls /opt/s3backupCopy/); do
+        if grep -E "\"${fullpath_folder}/?\"" "/opt/s3backupCopy/${item}" >/dev/null 2>&1; then
+            typer "There is already a job with this folder. Skipping...\n"
+            return 1
+        fi
+    done
+
     # Replace spaces with hypens in case they are present
     toadd_job="${fullpath_folder// /-}"
 
@@ -167,13 +180,32 @@ create_job() {
     # Remove the first "_" for easier readability
     toadd_job="${toadd_job/_/}"
 
-    # Remove the last char (which is "_") for easier readability
-    toadd_job="${toadd_job%_}"
+    # Create array for later check
+    for x in $(ls /etc/systemd/system/s3backupCopy_*.timer 2>/dev/null); do
+	    job=$(echo $x | sed 's/.*s3backupCopy_//')
+        job_array+=("${job%.*}")
+    done
+    while true; do
+        typer "Do you want to give this job a custom name? (default name: \"${toadd_job}\"): [y/n]: "
+        read confirm
+        case "${confirm}" in
+            Y|y ) 
+                custom_job=$(get_input custom_job "Insert job custom name: " "Job Custom name")
+                # Check if job with toadd_job name already exists
+                if [[ ! " ${job_array[*]} " == *" ${custom_job} "* ]]; then
+                    toadd_job="${custom_job}"
+                    typer "\nJob name is: \"${toadd_job}\"\n"
+                    break
+                fi
+                typer "There is already a job with name: \"${custom_job}\".\n" ;;
+            N|n ) 
+                typer "\nJob name is: \"${toadd_job}\"\n"
+                break ;;
+            * ) 
+                typer "Please answer y or n.\n" >&2 ;;
+        esac
+    done
 
-    if ls "/etc/systemd/system/s3backupCopy_${toadd_job}.service" >/dev/null 2>&1; then
-        typer "There is already a job with this folder. Skipping...\n"
-        return 1
-    fi
     destination="${current_repo}:${bucket_name}/${toadd_job}"
     
     # Create log directory if not already present
