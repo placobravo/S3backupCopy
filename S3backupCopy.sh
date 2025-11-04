@@ -3,8 +3,6 @@
 # Cleanup Function
 # split add_job function
 # Rotate logs
-# Add check for repository to see it exists, otherwise rclone gets stuck forever when trying to sync
-# Need to find a way to see if a job is stuck (for example if the bucket gets removed or the repo is not reachable)
 
 ############################# FUNCTIONS #############################
 # Variables that start with underscore "_" sign are present only inside heredocs
@@ -171,7 +169,7 @@ create_job() {
         fi
     done
 
-    # Replace spaces with hypens in case they are present
+    # Replace spaces with hyphens in case they are present
     toadd_job="${fullpath_folder// /-}"
 
     # Replaces "/" with "_"
@@ -190,16 +188,21 @@ create_job() {
         read confirm
         case "${confirm}" in
             Y|y ) 
-                custom_job=$(get_input custom_job "Insert job custom name: " "Job Custom name")
+                custom_job=$(get_input custom_job "Insert job custom name (forbidden chars: \" \\ / - _ space \"): " "Job Custom name")
+                # Check for forbidden characters
+                if [[ "${custom_job}" =~ [\ \\_/\-] ]]; then
+                    typer "Error: Input cannot contain \" \\ / - _ space \"\n\n"
+                    continue
+                fi
                 # Check if job with toadd_job name already exists
                 if [[ ! " ${job_array[*]} " == *" ${custom_job} "* ]]; then
                     toadd_job="${custom_job}"
                     typer "\nJob name is: \"${toadd_job}\"\n"
                     break
                 fi
-                typer "There is already a job with name: \"${custom_job}\".\n" ;;
+                typer "There is already a job with name: \"${custom_job}\".\n\n" ;;
             N|n ) 
-                typer "\nJob name is: \"${toadd_job}\"\n"
+                typer "\nJob name is: \"${toadd_job}\"\n\n"
                 break ;;
             * ) 
                 typer "Please answer y or n.\n" >&2 ;;
@@ -248,9 +251,7 @@ else
 fi
 
 # echo "\${_report}" 
-
 exit \${_error}
-
 COPYSCRIPT
     chmod +x "/opt/s3backupCopy/${toadd_job}.sh"
 
