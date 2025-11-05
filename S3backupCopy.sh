@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# TODO
-# Cleanup Function with trap
-# Rotate logs: Need version 1.71 onwards to use this flag --log-file-max-size -SizeSuffix
+# TODO Rotate logs: Need version 1.71 onwards to use this flag --log-file-max-size -SizeSuffix
 
 ############################# FUNCTIONS #############################
 # Variables that start with underscore "_" sign are present only inside heredocs
@@ -58,6 +56,17 @@ get_input() {
 
     # Return the value to caller
     printf '%s' "$value"
+}
+
+# Cleanup function which runs only in trap inside create_job
+cleanup_function() {
+    rm -f "/etc/systemd/system/s3backupCopy_${toadd_job}.timer" >/dev/null 2>&1
+    rm -f "/etc/systemd/system/s3backupCopy_${toadd_job}.service" >/dev/null 2>&1
+    rm -f "/var/log/s3backupCopy/${toadd_job}.log" >/dev/null 2>&1
+    rm -f "/opt/s3backupCopy/${toadd_job}.sh" >/dev/null 2>&1
+    systemctl daemon-reload
+    typer "\nCleaning up before quitting...\n"
+    exit 1
 }
 
 # This function is used to create/modify the rclone.conf file with a new repository
@@ -176,9 +185,9 @@ SYSTEMDSERVICE
     while true; do
         typer "Specify a scheduling time:\n"
 	    read scheduling
-	    next_run=$(systemd-analyze calendar --iterations 5 "${scheduling}" 2>/dev/null)
+	    next_run=$(systemd-analyze calendar --iterations 6 "${scheduling}" 2>/dev/null)
 	    if [ $? -eq 0 ]; then
-	       typer "\nThose would be the next 5 scheduling for the job:\n"
+	       typer "\nThose would be the next 6 scheduling for the job:\n"
 	       printf "${next_run}\n"
 	       typer "Is this ok? [y/N]: "
 	       read choice
@@ -303,9 +312,9 @@ create_job() {
         read confirm
         case "${confirm}" in
             Y|y ) 
-                custom_job=$(get_input custom_job "Insert job custom name (forbidden chars: \" \\ / - _ space \"): " "Job Custom name")
+                custom_job=$(get_input custom_job "Insert job custom name (forbidden chars: \" \\ / - * _ space \"): " "Job Custom name")
                 # Check for forbidden characters
-                if [[ "${custom_job}" =~ [\ \\_/\-] ]]; then
+                if [[ "${custom_job}" =~ [\ \\_\*/\-] ]]; then
                     typer "Error: Input cannot contain \" \\ / - _ space \"\n\n"
                     continue
                 fi
@@ -421,6 +430,10 @@ remove_job() {
 
 
 ############################# SCRIPT #############################
+
+# Trap SIGINT (ctrl+c) and call for cleanup_function in case some file where created
+trap cleanup_function SIGINT
+
 cat << "EOF"
  _____  ___________            _                _____                   
 /  ___||____ | ___ \          | |              /  __ \                  
