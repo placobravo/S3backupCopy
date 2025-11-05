@@ -223,14 +223,13 @@ create_job() {
     # Generate the actual copy script
     cat << COPYSCRIPT > "/opt/s3backupCopy/${toadd_job}.sh"
 #!/usr/bin/env bash
+_start_time="\$(timedatectl | grep "Local time" | awk -F': ' '{print \$2}')"
 rclone lsd "${current_repo}":"${bucket_name}" >/dev/null 2>&1
-    _start_time="\$(timedatectl | grep "Local time" | awk -F': ' '{print \$2}')"
 
 if [ \$? -ne 0 ]; then
     _report="\$(printf "Subject: [Failed] S3BackupCopy ${toadd_job}\n\nThere was an error trying to reach the repository or the bucket.")"
     _error="1"
 else
-    
     rclone sync --progress --log-file "${log_file}" --log-level INFO --progress-terminal-title "$fullpath_folder" "$destination"
     rclone check --size-only "${fullpath_folder}" "${destination}"
     
