@@ -224,28 +224,29 @@ create_job() {
     cat << COPYSCRIPT > "/opt/s3backupCopy/${toadd_job}.sh"
 #!/usr/bin/env bash
 rclone lsd "${current_repo}":"${bucket_name}" >/dev/null 2>&1
+    _start_time="\$(timedatectl | grep "Local time" | awk -F': ' '{print \$2}')"
+
 if [ \$? -ne 0 ]; then
     _report="\$(printf "Subject: [Failed] S3BackupCopy ${toadd_job}\n\nThere was an error trying to reach the repository or the bucket.")"
     _error="1"
 else
-    _start_time="\$(timedatectl | grep "Local time" | awk -F': ' '{print \$2}')"
     
     rclone sync --progress --log-file "${log_file}" --log-level INFO --progress-terminal-title "$fullpath_folder" "$destination"
     rclone check --size-only "${fullpath_folder}" "${destination}"
     
     _exit_status=\$?
-    _last_time="\$(timedatectl | grep "Local time" | awk -F': ' '{print \$2}')"
     _total_data="\$(du -hs "${fullpath_folder}" | awk '{print \$1}')"
+    _end_time="\$(timedatectl | grep "Local time" | awk -F': ' '{print \$2}')"
     
     if [ \${_exit_status} -eq 0 ]; then
         _transfers="\$(cat ${log_file} | awk '/INFO/{last=NR} {lines[NR]=\$0} END{for(i=last+1;i<=NR;i++) print lines[i]}' | head -n 1 | awk '{print \$1,\$2,\$3,\$4,\$5,\$6,\$7}')"
         _elapsed="\$(cat ${log_file} | awk '/INFO/{last=NR} {lines[NR]=\$0} END{for(i=last+1;i<=NR;i++) print lines[i]}' | tail -n 2)"
         _misc="\$(cat ${log_file} | awk '/INFO/{last=NR} {lines[NR]=\$0} END{for(i=last+1;i<=NR;i++) print lines[i]}' | tail -n +2 | head -n -2)"
-        _report="\$(echo -e "Subject: [Success] S3BACKUPCOPY ${toadd_job}\n\nJob ended with status: Success\n\n\${_start_time}    JOB START TIME\n\${_last_time}    JOB END TIME\n\n\${_transfers} in \${_elapsed}\n\nTotal source folder size: \${_total_data}\n\${_misc}")"
+        _report="\$(echo -e "Subject: [Success] S3BACKUPCOPY ${toadd_job}\n\nJob ended with status: Success\n\n\${_start_time}    JOB START TIME\n\${_end_time}    JOB END TIME\n\n\${_transfers} in \${_elapsed}\n\nTotal source folder size: \${_total_data}\n\${_misc}")"
         _error="0"
     
     else
-        _report="\$(echo -e "Subject: [Failed] S3BACKUPCOPY ${toadd_job}\n\nJob ended with status: Failed\n\n\${_start_time}    JOB START TIME\n\${_last_time}    JOB END TIME\n\nTotal source folder size: \${_total_data}\nCheck the logs to see the error.")"
+        _report="\$(echo -e "Subject: [Failed] S3BACKUPCOPY ${toadd_job}\n\nJob ended with status: Failed\n\n\${_start_time}    JOB START TIME\n\${_end_time}    JOB END TIME\n\nTotal source folder size: \${_total_data}\nCheck the logs to see the error.")"
         _error="1"
     fi
 fi
