@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 # TODO Rotate logs: Need version 1.71 onwards to use this flag --log-file-max-size -SizeSuffix
-# TODO Check all arrays expansions
-# TODO Finish checks with shellcheck
 
 ############################# FUNCTIONS #############################
 # Variables that start with underscore "_" sign are present only inside heredocs
@@ -223,13 +221,10 @@ SYSTEMDTIMER
 # This is the function which creates the script for the backup and the corresponding systemd units
 create_job() {
     local avail_repos
-    local avail_repos_array
     local current_repo
     local buckets
     local bucket_name
-    local buckets_array
     local fullpath_folder
-    local job
     local job_array
     local custom_job
     local toadd_job
@@ -239,14 +234,10 @@ create_job() {
     if [ -z "${avail_repos}" ]; then
         typer "\nYou have no repositories, first add one, then you can add jobs to it.\n"
 	    return 1
-    else
-        for repo in ${avail_repos}; do
-            avail_repos_array+=("${repo}")
-        done
     fi
 
     typer "\nFirst, you need to choose a repository for your job. These are the available ones:\n"
-    select current_repo in ${avail_repos_array[@]}; do
+    select current_repo in ${avail_repos}; do
         if [[ -n "${current_repo}" ]]; then
             typer "Repository: \"${current_repo}\"\n"
             break
@@ -256,16 +247,13 @@ create_job() {
     done
 
     typer "Fetching available buckets...\n"
-    if ! buckets="$(rclone lsd ${current_repo}: 2>/dev/null)"; then
+    if ! buckets="$(rclone lsd ${current_repo}: 2>/dev/null | awk '{print $5}')"; then
         typer "There is an error with this repo, please try again.\n"
         return 1
     fi
-    for x in "${buckets}"; do
-        buckets_array+=( $(echo "${x}" | awk '{print $5}') )
-    done
     typer "Select a bucket:\n"
     # Prompts user for available buckets
-    select bucket_name in "${buckets_array[@]}"; do
+    select bucket_name in ${buckets}; do
         if [[ -n "${bucket_name}" ]]; then
             typer "Bucket: \"${bucket_name}\"\n"
             break
@@ -287,8 +275,9 @@ create_job() {
     fullpath_folder="${fullpath_folder%/}"
 
     # Check if a job with the given fullpath_folder already exists
-    for item in $(ls /opt/s3backupCopy/); do
-        if grep -E "\"${fullpath_folder}/?\"" "/opt/s3backupCopy/${item}" >/dev/null 2>&1; then
+    for item in /opt/s3backupCopy/*; do
+        [ -e "${item}" ] || continue
+        if grep -E "\"${fullpath_folder}/?\"" "${item}" >/dev/null 2>&1; then
             typer "There is already a job with this folder. Skipping...\n"
             return 1
         fi
@@ -302,8 +291,8 @@ create_job() {
 
     # Create array for later check
     for x in /etc/systemd/system/s3backupCopy_*.timer; do
-	    job=$(echo $x | sed 's/.*s3backupCopy_//')
-        job_array+=("${job%.*}")
+        [ -e "${x}" ] || continue
+        job_array+=($(echo ${x%.timer} | sed 's/.*s3backupCopy_//'))
     done
     while true; do
         typer "Do you want to give this job a custom name? (default name: \"${toadd_job}\"): [y/n]: "
@@ -339,39 +328,36 @@ create_job() {
 # Function to list all the jobs, both active and inactive
 list_jobs() {
     local running_list
-    local running_job
     local actives
-    local active_job
     local inactives
-    local inactive_job
+
+    typer "Gathering jobs...\n\n"
+    sleep 1
+
+    for x in /etc/systemd/system/s3backupCopy_*.timer; do
+        [ -e "${x}" ] || continue
+        # List active (both running and not running)
+        if [[ "$(systemctl status "$(basename "${x}")")" == *"Active: active"* ]]; then
+            actives+=($(echo "${x%.timer}" | sed 's/.*s3backupCopy_//'))
+        # List inactive (both running and not running)
+    	elif [[ "$(systemctl status "$(basename "${x}")")" == *"Active: inactive"* ]]; then
+            inactives+=($(echo "${x%.timer}" | sed 's/.*s3backupCopy_//'))
+        fi
+    done
+    typer "\nThese are the active jobs:\n"
+    for item in "${actives[@]}"; do
+        typer "${item}\n"
+    done
+    typer "\nThese are the inactive jobs:\n"
+    for item in "${inactives[@]}"; do
+        typer "${item}\n"
+    done
 
     # List running jobs
     running_list=$(systemctl list-units --state=running --no-pager --no-legend | grep s3backupCopy | grep loaded | awk '{print $1}' | grep service)
     typer "\nThese are the running jobs:\n"
     for x in ${running_list}; do
-        running_job=$(echo "$x" | sed 's/.*s3backupCopy_//')
-        typer "${running_job%.*}\n"
-    done
-
-    for x in $(ls /etc/systemd/system/s3backupCopy_*.timer 2>/dev/null); do
-        # List active (both running and non running)
-        if [[ "$(systemctl status $(basename $x))" == *"Active: active"* ]]; then
-    	    active_job=$(echo $x | sed 's/.*s3backupCopy_//')
-    	    actives+=("${active_job%.*}")
-        # List inactive (both running and non running)
-        # Job could be inactive but running if <toadd_job>.service was started manually
-    	elif [[ "$(systemctl status $(basename $x))" == *"Active: inactive"* ]]; then
-    	    inactive_job=$(echo $x | sed 's/.*s3backupCopy_//')
-            inactives+=("${inactive_job%.*}")
-        fi
-    done
-    typer "\nThese are the active jobs:\n"
-    for item in ${actives[@]}; do
-        typer "${item}\n"
-    done
-    typer "\nThese are the inactive jobs:\n"
-    for item in ${inactives[@]}; do
-        typer "${item}\n"
+        typer "$(echo "${x%.*}" | sed 's/.*s3backupCopy_//')\n"
     done
 
     typer "\nTo analyze them use 'systemctl status <job_name>.timer' and 'systemctl status <job_name>.service'\n"
@@ -384,13 +370,12 @@ list_repositories() {
 }
 
 remove_job() {
-    local job
     local job_array
     local to_delete
 
-    for x in $(ls /etc/systemd/system/s3backupCopy_*.timer 2>/dev/null); do
-	    job=$(echo $x | sed 's/.*s3backupCopy_//')
-        job_array+=("${job%.*}")
+    for x in /etc/systemd/system/s3backupCopy_*.timer; do
+        [ -e "${x}" ] || continue
+        job_array+=($(echo ${x%.timer} | sed 's/.*s3backupCopy_//'))
     done
     if [ ${#job_array[@]} -eq 0 ]; then
         typer "There are no jobs.\n"
