@@ -45,9 +45,9 @@ get_input() {
     # acts as a return string
     while true; do
         typer "${prompt}" >&2
-        read -e value
+        read -r -e value
         typer "${varcheck} = \"${value}\". Is this correct? [y/N]: " >&2
-        read confirm
+        read -r confirm
         case "${confirm}" in
             Y|y ) break ;;
             * ) typer "Let's try again.\n" >&2;;
@@ -79,7 +79,6 @@ create_repo() {
     while true; do
         repo_name=$(get_input repo_name "Insert a custom repository name: " "Repository name")
         grep -w "$repo_name" /root/.config/rclone/rclone.conf >/dev/null 2>&1 || break
-        sleep 1
         typer "\nThis repo already exists, please insert a different one, or quit if you want to add jobs to it.\n\n"
     done
     s3_server=$(get_input s3_server "Insert the S3 server (https://example.com): " "S3 Server")
@@ -124,9 +123,8 @@ create_copyscript() {
     cat << COPYSCRIPT | sed 's/^....//' > "/opt/s3backupCopy/${toadd_job}.sh"
     #!/usr/bin/env bash
     _start_time="\$(timedatectl | grep "Local time" | awk -F': ' '{print \$2}')"
-    rclone lsd "${current_repo}":"${bucket_name}" >/dev/null 2>&1
     
-    if [ \$? -ne 0 ]; then
+    if rclone lsd "${current_repo}":"${bucket_name}" >/dev/null 2>&1; then
         _report="\$(printf "Subject: [Failed] S3BackupCopy ${toadd_job}\n\nThere was an error trying to reach the repository or the bucket.")"
         _error="1"
     else
@@ -184,13 +182,12 @@ SYSTEMDSERVICE
 
     while true; do
         typer "Specify a scheduling time:\n"
-	    read scheduling
-	    next_run=$(systemd-analyze calendar --iterations 6 "${scheduling}" 2>/dev/null)
-	    if [ $? -eq 0 ]; then
+	    read -r scheduling
+	    if next_run=$(systemd-analyze calendar --iterations 6 "${scheduling}" 2>/dev/null); then
 	       typer "\nThose would be the next 6 scheduling for the job:\n"
 	       printf "${next_run}\n"
 	       typer "Is this ok? [y/N]: "
-	       read choice
+	       read -r choice
 	       [ "$choice" = "y" ] && break
 	       printf "\n"
         else
@@ -212,7 +209,7 @@ SYSTEMDSERVICE
 SYSTEMDTIMER
 
     typer "Do you want to enable this job? [y/N]: "
-    read choice
+    read -r choice
     if [ "$choice" = "y" ]; then
         systemctl enable --now "s3backupCopy_${toadd_job}.timer" >/dev/null 2>&1
         typer "\nJob \"${toadd_job}\" was added and enabled succesfully!\n"
@@ -224,13 +221,10 @@ SYSTEMDTIMER
 # This is the function which creates the script for the backup and the corresponding systemd units
 create_job() {
     local avail_repos
-    local avail_repos_array
     local current_repo
     local buckets
     local bucket_name
-    local buckets_array
     local fullpath_folder
-    local job
     local job_array
     local custom_job
     local toadd_job
@@ -240,14 +234,10 @@ create_job() {
     if [ -z "${avail_repos}" ]; then
         typer "\nYou have no repositories, first add one, then you can add jobs to it.\n"
 	    return 1
-    else
-        for repo in "${avail_repos}"; do
-            avail_repos_array+=($repo)
-        done
     fi
 
     typer "\nFirst, you need to choose a repository for your job. These are the available ones:\n"
-    select current_repo in "${avail_repos_array[@]}"; do
+    select current_repo in ${avail_repos}; do
         if [[ -n "${current_repo}" ]]; then
             typer "Repository: \"${current_repo}\"\n"
             break
@@ -257,17 +247,13 @@ create_job() {
     done
 
     typer "Fetching available buckets...\n"
-    buckets="$(rclone lsd ${current_repo}: 2>/dev/null)"
-    if [ $? -ne 0 ]; then
+    if ! buckets="$(rclone lsd ${current_repo}: 2>/dev/null | awk '{print $5}')"; then
         typer "There is an error with this repo, please try again.\n"
         return 1
     fi
-    for x in "${buckets}"; do
-        buckets_array+=( $(echo "${x}" | awk '{print $5}') )
-    done
     typer "Select a bucket:\n"
     # Prompts user for available buckets
-    select bucket_name in "${buckets_array[@]}"; do
+    select bucket_name in ${buckets}; do
         if [[ -n "${bucket_name}" ]]; then
             typer "Bucket: \"${bucket_name}\"\n"
             break
@@ -289,8 +275,9 @@ create_job() {
     fullpath_folder="${fullpath_folder%/}"
 
     # Check if a job with the given fullpath_folder already exists
-    for item in $(ls /opt/s3backupCopy/); do
-        if grep -E "\"${fullpath_folder}/?\"" "/opt/s3backupCopy/${item}" >/dev/null 2>&1; then
+    for item in /opt/s3backupCopy/*; do
+        [ -e "${item}" ] || continue
+        if grep -E "\"${fullpath_folder}/?\"" "${item}" >/dev/null 2>&1; then
             typer "There is already a job with this folder. Skipping...\n"
             return 1
         fi
@@ -303,13 +290,13 @@ create_job() {
     toadd_job="${toadd_job/_/}"
 
     # Create array for later check
-    for x in $(ls /etc/systemd/system/s3backupCopy_*.timer 2>/dev/null); do
-	    job=$(echo $x | sed 's/.*s3backupCopy_//')
-        job_array+=("${job%.*}")
+    for x in /etc/systemd/system/s3backupCopy_*.timer; do
+        [ -e "${x}" ] || continue
+        job_array+=($(echo ${x%.timer} | sed 's/.*s3backupCopy_//'))
     done
     while true; do
         typer "Do you want to give this job a custom name? (default name: \"${toadd_job}\"): [y/n]: "
-        read confirm
+        read -r confirm
         case "${confirm}" in
             Y|y ) 
                 custom_job=$(get_input custom_job "Insert job custom name (forbidden chars: \" \\ / - * _ space \"): " "Job Custom name")
@@ -341,39 +328,36 @@ create_job() {
 # Function to list all the jobs, both active and inactive
 list_jobs() {
     local running_list
-    local running_job
     local actives
-    local active_job
     local inactives
-    local inactive_job
+
+    typer "Gathering jobs...\n\n"
+    sleep 1
+
+    for x in /etc/systemd/system/s3backupCopy_*.timer; do
+        [ -e "${x}" ] || continue
+        # List active (both running and not running)
+        if [[ "$(systemctl status "$(basename "${x}")")" == *"Active: active"* ]]; then
+            actives+=($(echo "${x%.timer}" | sed 's/.*s3backupCopy_//'))
+        # List inactive (both running and not running)
+    	elif [[ "$(systemctl status "$(basename "${x}")")" == *"Active: inactive"* ]]; then
+            inactives+=($(echo "${x%.timer}" | sed 's/.*s3backupCopy_//'))
+        fi
+    done
+    typer "\nThese are the active jobs:\n"
+    for item in "${actives[@]}"; do
+        typer "${item}\n"
+    done
+    typer "\nThese are the inactive jobs:\n"
+    for item in "${inactives[@]}"; do
+        typer "${item}\n"
+    done
 
     # List running jobs
     running_list=$(systemctl list-units --state=running --no-pager --no-legend | grep s3backupCopy | grep loaded | awk '{print $1}' | grep service)
     typer "\nThese are the running jobs:\n"
     for x in ${running_list}; do
-        running_job=$(echo "$x" | sed 's/.*s3backupCopy_//')
-        typer "${running_job%.*}\n"
-    done
-
-    for x in $(ls /etc/systemd/system/s3backupCopy_*.timer 2>/dev/null); do
-        # List active (both running and non running)
-        if [[ "$(systemctl status $(basename $x))" == *"Active: active"* ]]; then
-    	    active_job=$(echo $x | sed 's/.*s3backupCopy_//')
-    	    actives+=("${active_job%.*}")
-        # List inactive (both running and non running)
-        # Job could be inactive but running if <toadd_job>.service was started manually
-    	elif [[ "$(systemctl status $(basename $x))" == *"Active: inactive"* ]]; then
-    	    inactive_job=$(echo $x | sed 's/.*s3backupCopy_//')
-            inactives+=("${inactive_job%.*}")
-        fi
-    done
-    typer "\nThese are the active jobs:\n"
-    for item in ${actives[@]}; do
-        typer "${item}\n"
-    done
-    typer "\nThese are the inactive jobs:\n"
-    for item in ${inactives[@]}; do
-        typer "${item}\n"
+        typer "$(echo "${x%.*}" | sed 's/.*s3backupCopy_//')\n"
     done
 
     typer "\nTo analyze them use 'systemctl status <job_name>.timer' and 'systemctl status <job_name>.service'\n"
@@ -386,13 +370,12 @@ list_repositories() {
 }
 
 remove_job() {
-    local job
     local job_array
     local to_delete
 
-    for x in $(ls /etc/systemd/system/s3backupCopy_*.timer 2>/dev/null); do
-	    job=$(echo $x | sed 's/.*s3backupCopy_//')
-        job_array+=("${job%.*}")
+    for x in /etc/systemd/system/s3backupCopy_*.timer; do
+        [ -e "${x}" ] || continue
+        job_array+=($(echo ${x%.timer} | sed 's/.*s3backupCopy_//'))
     done
     if [ ${#job_array[@]} -eq 0 ]; then
         typer "There are no jobs.\n"
@@ -410,8 +393,8 @@ remove_job() {
     done
 
     typer "Deleting this job will also remove any log associated with it.\nDo you wish to continue? [y/N]: "
-    read choice 
-    [ $choice = "y" ] || return 1
+    read -r choice
+    [ $choice = "y" ] || return 0
 
     if systemctl is-active --quiet s3backupCopy_${to_delete}.service; then
         typer "Job \"${to_delete}\" is currently running. Wait for it to finish or stop it manually.\n"
@@ -447,13 +430,14 @@ EOF
 
 # Checks for root and dependencies
 if [ "$(whoami)" != "root" ]; then
-    typer "\nYou need to be root to execute this script.\n" && exit 126
+    typer "\nYou need to be root to execute this script.\n" >&2
+    exit 126
 fi
 
 # Check if rclone is installed
 if ! which rclone >/dev/null 2>&1; then
-    typer "\nRclone is needed to execute this script.\n"
-exit 1
+    typer "\nRclone is needed to execute this script.\n" >&2
+    exit 1
 fi
 
 
@@ -472,7 +456,7 @@ while true; do
 6) Quit
 DYNMENU
     typer "Choose an option [1-6]: "
-        read choice
+        read -r choice
         case $choice in
             1)
              create_repo
