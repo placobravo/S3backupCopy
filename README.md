@@ -1,1 +1,3 @@
-Bash script to schedule backups from local folders to any S3 compatible storage
+# S3backupCopy
+
+This is the S3backupCopy testing branch.
