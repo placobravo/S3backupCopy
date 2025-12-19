@@ -328,7 +328,11 @@ create_job() {
 }
 
 list_enabled_units() {
-    local enabled_jobs
+    local notext
+
+    for arg in "$@"; do
+        [[ "$arg" == "--notext" ]] && notext=true
+    done
 
     for x in /etc/systemd/system/s3backupCopy_*.timer; do
         [ -e "${x}" ] || continue
@@ -337,6 +341,7 @@ list_enabled_units() {
         fi
     done
 
+    [ ${notext} ] && return 0
     typer "\nThese are the enabled jobs." 
     typer "\nEnabled jobs will become active at system boot."
     typer "\nThey will then run periodically based on the given scheduling.\n"
@@ -346,10 +351,16 @@ list_enabled_units() {
 }
 
 list_running_units() {
-    local running_list
+    local notext
+
+    for arg in "$@"; do
+        [[ "$arg" == "--notext" ]] && notext=true
+    done
 
     # List running jobs
     running_list=$(systemctl list-units --state=running --no-pager --no-legend | grep s3backupCopy | grep loaded | awk '{print $1}' | grep service)
+
+    [ ${notext} ] && return 0
     typer "\nThese are the running jobs."
     typer "\nRunning jobs are currently backing up data.\n"
     for x in ${running_list}; do
@@ -358,9 +369,11 @@ list_running_units() {
 }
 
 list_active_inactive_units() {
-    local actives
-    local inactives
+    local notext
 
+    for arg in "$@"; do
+        [[ "$arg" == "--notext" ]] && notext=true
+    done
     for x in /etc/systemd/system/s3backupCopy_*.timer; do
         [ -e "${x}" ] || continue
         # List active (both running and not running)
@@ -377,6 +390,7 @@ list_active_inactive_units() {
         fi
     done
 
+    [ ${notext} ] && return 0
     typer "\nThese are the active jobs."
     typer "\nActive jobs will run periodically based on the given scheduling.\n"
     for item in "${actives[@]}"; do
@@ -396,12 +410,16 @@ list_jobs() {
     sleep 1
 
     # List both active and inactive jobs
+    local actives
+    local inactives
     list_active_inactive_units
 
     # List running jobs
+    local running_list
     list_running_units
 
     # List enabled jobs
+    local enabled_jobs
     list_enabled_units
 
     typer "\nTo analyze them use 'systemctl status s3backupCopy_<job_name>.timer' and 'systemctl status s3backupCopy_<job_name>.service'\n"
@@ -453,6 +471,37 @@ remove_job() {
     systemctl daemon-reload >/dev/null 2>&1
     rm "/var/log/s3backupCopy/${to_delete}.log" 2>/dev/null
     typer "Job \"${to_delete}\" removed correctly!\n"
+}
+
+# Function to stop all currently scheduled jobs
+stop_all_jobs() {
+    typer "\nThis function will stop all the active jobs."
+    typer "\nCurrently enabled jobs will be rescheduled on system reboot."
+    typer "\nDo you wish to continue? [y/N]: "
+    read -r choice
+    [ $choice = "y" ] || return 0
+
+    local running_list
+    list_running_units --notext
+    if [[ -n "${running_list}" ]]; then
+        # tell the user that some jobs are running and that the script can wait for them to finish and disable all the others
+    fi
+
+    local actives
+    list_active_inactive_units --notext
+
+    while [[ ${#actives[@]} -gt 0 ]]; do
+        for x in actives; do
+            if systemctl is-active --quiet s3backupCopy_${x}.service; then
+                typer "Job \"${x}\" is currently running. Skipping for now...\n"
+            else
+                systemctl stop --quiet s3backupCopy_${x}.timer
+            fi
+        done
+        typer "\nWaiting 2 minutes before trying again...\n"
+        sleep 120
+        list_active_inactive_units --notext
+    done
 }
 
 
