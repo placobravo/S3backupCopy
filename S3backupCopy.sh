@@ -337,7 +337,9 @@ list_enabled_units() {
         fi
     done
 
-    typer "\nThese are the jobs set to automatically start at system boot:\n"
+    typer "\nThese are the enabled jobs." 
+    typer "\nEnabled jobs will become active at system boot."
+    typer "\nThey will then run periodically based on the given scheduling.\n"
     for item in "${enabled_jobs[@]}"; do
         typer "${item}\n"
     done
@@ -348,7 +350,8 @@ list_running_units() {
 
     # List running jobs
     running_list=$(systemctl list-units --state=running --no-pager --no-legend | grep s3backupCopy | grep loaded | awk '{print $1}' | grep service)
-    typer "\nThese are the running jobs:\n"
+    typer "\nThese are the running jobs."
+    typer "\nRunning jobs are currently backing up data.\n"
     for x in ${running_list}; do
         typer "$(echo "${x%.*}" | sed 's/.*s3backupCopy_//')\n"
     done
@@ -374,11 +377,13 @@ list_active_inactive_units() {
         fi
     done
 
-    typer "\nThese are the active jobs:\n"
+    typer "\nThese are the active jobs."
+    typer "\nActive jobs will run periodically based on the given scheduling.\n"
     for item in "${actives[@]}"; do
         typer "${item}\n"
     done
-    typer "\nThese are the inactive jobs:\n"
+    typer "\nThese are the inactive jobs."
+    typer "\nInactive jobs are disabled and will not run.\n"
     for item in "${inactives[@]}"; do
         typer "${item}\n"
     done
@@ -478,10 +483,6 @@ if ! which rclone >/dev/null 2>&1; then
     typer "\nRclone is needed to execute this script.\n" >&2
     exit 1
 fi
-
-
-list_enabled_units
-
 
 # Interactive menu
 while true; do
