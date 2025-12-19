@@ -327,28 +327,36 @@ create_job() {
     create_systemd_units # Create corresponding systemd unit and timer units
 }
 
-# TODO Add function to list systemd enabled units (units that will restart on boot)
 list_enabled_units() {
-    local enabledes
+    local enabled_jobs
 
     for x in /etc/systemd/system/s3backupCopy_*.timer; do
         [ -e "${x}" ] || continue
         if [[ "$(systemctl status "$(basename "${x}")")" == *"enabled; preset"* ]]; then
-            enabledes+=($(echo "${x%.timer}" | sed 's/.*s3backupCopy_//'))
+            enabled_jobs+=($(echo "${x%.timer}" | sed 's/.*s3backupCopy_//'))
         fi
     done
 
-    echo $enabledes
+    typer "\nThese are the jobs set to automatically start at system boot:\n"
+    for item in "${enabled_jobs[@]}"; do
+        typer "${item}\n"
+    done
 }
 
-# Function to list all the jobs, both active and inactive
-list_jobs() {
+list_running_units() {
     local running_list
+
+    # List running jobs
+    running_list=$(systemctl list-units --state=running --no-pager --no-legend | grep s3backupCopy | grep loaded | awk '{print $1}' | grep service)
+    typer "\nThese are the running jobs:\n"
+    for x in ${running_list}; do
+        typer "$(echo "${x%.*}" | sed 's/.*s3backupCopy_//')\n"
+    done
+}
+
+list_active_inactive_units() {
     local actives
     local inactives
-
-    typer "Gathering jobs...\n\n"
-    sleep 1
 
     for x in /etc/systemd/system/s3backupCopy_*.timer; do
         [ -e "${x}" ] || continue
@@ -365,6 +373,7 @@ list_jobs() {
             inactives+=($(echo "${x%.timer}" | sed 's/.*s3backupCopy_//'))
         fi
     done
+
     typer "\nThese are the active jobs:\n"
     for item in "${actives[@]}"; do
         typer "${item}\n"
@@ -373,16 +382,24 @@ list_jobs() {
     for item in "${inactives[@]}"; do
         typer "${item}\n"
     done
+}
 
+# Function to list all the job: active, inactive, enabled and running
+list_jobs() {
+
+    typer "Gathering jobs...\n\n"
+    sleep 1
+
+    # List both active and inactive jobs
+    list_active_inactive_units
 
     # List running jobs
-    running_list=$(systemctl list-units --state=running --no-pager --no-legend | grep s3backupCopy | grep loaded | awk '{print $1}' | grep service)
-    typer "\nThese are the running jobs:\n"
-    for x in ${running_list}; do
-        typer "$(echo "${x%.*}" | sed 's/.*s3backupCopy_//')\n"
-    done
+    list_running_units
 
-    typer "\nTo analyze them use 'systemctl status <job_name>.timer' and 'systemctl status <job_name>.service'\n"
+    # List enabled jobs
+    list_enabled_units
+
+    typer "\nTo analyze them use 'systemctl status s3backupCopy_<job_name>.timer' and 'systemctl status s3backupCopy_<job_name>.service'\n"
     typer "You can find the logs at '/var/log/s3backupCopy/<job_name>.log'\n"
 }
 
