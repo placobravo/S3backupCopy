@@ -481,3 +481,46 @@ fi
 
 
 list_enabled_units
+
+
+# Interactive menu
+while true; do
+    cat << DYNMENU
+
+--------------------------------------
+-               MENU                 -
+--------------------------------------
+1) Add a new repository
+2) Create new job
+3) List current jobs
+4) List current repositories
+5) Remove a job
+6) Quit
+DYNMENU
+    typer "Choose an option [1-6]: "
+        read -r choice
+        case $choice in
+            1)
+             create_repo
+             ;;
+            2)
+             create_job
+             ;;
+            3)
+             list_jobs
+             ;;
+            4)
+             list_repositories
+             ;;
+            5)
+             remove_job
+             ;;
+            6)
+             typer "Bye!\n"
+             exit
+             ;;
+            *)
+             continue
+             ;;
+        esac
+done
