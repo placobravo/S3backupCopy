@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # TODO Rotate logs: Need version 1.71 onwards to use this flag --log-file-max-size -SizeSuffix
+# TODO Add do readme information about the meaning of active, inactive, enabled, disabled and running units
+# TODO Split function of list_jobs with subfunctions
 
 ############################# FUNCTIONS #############################
 # Variables that start with underscore "_" sign are present only inside heredocs
@@ -325,6 +327,20 @@ create_job() {
     create_systemd_units # Create corresponding systemd unit and timer units
 }
 
+# TODO Add function to list systemd enabled units (units that will restart on boot)
+list_enabled_units() {
+    local enabledes
+
+    for x in /etc/systemd/system/s3backupCopy_*.timer; do
+        [ -e "${x}" ] || continue
+        if [[ "$(systemctl status "$(basename "${x}")")" == *"enabled; preset"* ]]; then
+            enabledes+=($(echo "${x%.timer}" | sed 's/.*s3backupCopy_//'))
+        fi
+    done
+
+    echo $enabledes
+}
+
 # Function to list all the jobs, both active and inactive
 list_jobs() {
     local running_list
@@ -337,9 +353,14 @@ list_jobs() {
     for x in /etc/systemd/system/s3backupCopy_*.timer; do
         [ -e "${x}" ] || continue
         # List active (both running and not running)
+        # These are systemd active units: they may or may not be enabled units
+        # (a systemd unit can be disabled but active at the same time)
         if [[ "$(systemctl status "$(basename "${x}")")" == *"Active: active"* ]]; then
             actives+=($(echo "${x%.timer}" | sed 's/.*s3backupCopy_//'))
+
         # List inactive (both running and not running)
+        # These are systemd inactive units: they may or may not be enabled units
+        # (a systemd unit can be enabled but inactive at the same time)
     	elif [[ "$(systemctl status "$(basename "${x}")")" == *"Active: inactive"* ]]; then
             inactives+=($(echo "${x%.timer}" | sed 's/.*s3backupCopy_//'))
         fi
@@ -352,6 +373,7 @@ list_jobs() {
     for item in "${inactives[@]}"; do
         typer "${item}\n"
     done
+
 
     # List running jobs
     running_list=$(systemctl list-units --state=running --no-pager --no-legend | grep s3backupCopy | grep loaded | awk '{print $1}' | grep service)
@@ -441,44 +463,4 @@ if ! which rclone >/dev/null 2>&1; then
 fi
 
 
-# Interactive menu
-while true; do
-    cat << DYNMENU
-
---------------------------------------
--               MENU                 -
---------------------------------------
-1) Add a new repository
-2) Create new job
-3) List current jobs
-4) List current repositories
-5) Remove a job
-6) Quit
-DYNMENU
-    typer "Choose an option [1-6]: "
-        read -r choice
-        case $choice in
-            1)
-             create_repo
-             ;;
-            2)
-             create_job
-             ;;
-            3)
-             list_jobs
-             ;;
-            4)
-             list_repositories
-             ;;
-            5)
-             remove_job
-             ;;
-            6)
-             typer "Bye!\n"
-             exit
-             ;;
-            *)
-             continue
-             ;;
-        esac
-done
+list_enabled_units
