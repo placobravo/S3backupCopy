@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # TODO Rotate logs: Need version 1.71 onwards to use this flag --log-file-max-size -SizeSuffix
 # TODO Add do readme information about the meaning of active, inactive, enabled, disabled and running units
-# TODO Split function of list_jobs with subfunctions
+# TODO Print estimated left time when listing running jobs
+# TODO Add next scheduling when listing active jobs
+# TODO Add how many iterations of tries have been done since starting the stop_all_jobs function
 
 ############################# FUNCTIONS #############################
 # Variables that start with underscore "_" sign are present only inside heredocs
@@ -62,6 +64,7 @@ get_input() {
 
 # Cleanup function which runs only in trap inside create_job
 cleanup_function() {
+    echo ${toadd_job}
     rm -f "/etc/systemd/system/s3backupCopy_${toadd_job}.timer" >/dev/null 2>&1
     rm -f "/etc/systemd/system/s3backupCopy_${toadd_job}.service" >/dev/null 2>&1
     rm -f "/var/log/s3backupCopy/${toadd_job}.log" >/dev/null 2>&1
@@ -337,17 +340,20 @@ list_enabled_units() {
     for x in /etc/systemd/system/s3backupCopy_*.timer; do
         [ -e "${x}" ] || continue
         if [[ "$(systemctl status "$(basename "${x}")")" == *"enabled; preset"* ]]; then
+            # This variable is global. It is set to local when calling the function outside
             enabled_jobs+=($(echo "${x%.timer}" | sed 's/.*s3backupCopy_//'))
         fi
     done
 
     [ ${notext} ] && return 0
-    typer "\nThese are the enabled jobs." 
-    typer "\nEnabled jobs will become active at system boot."
-    typer "\nThey will then run periodically based on the given scheduling.\n"
+    printf "|======================================================================|"
+    typer "\n|These are the enabled jobs:" 
+    typer "\n|(Enabled jobs will become active at system boot)"
+    typer "\n|(They will then run periodically based on the given scheduling)\n|\n"
     for item in "${enabled_jobs[@]}"; do
-        typer "${item}\n"
+        typer "|> ${item}\n"
     done
+    printf "|======================================================================|\n\n"
 }
 
 list_running_units() {
@@ -358,14 +364,17 @@ list_running_units() {
     done
 
     # List running jobs
+    # This variable is global. It is set to local when calling the function outside
     running_list=$(systemctl list-units --state=running --no-pager --no-legend | grep s3backupCopy | grep loaded | awk '{print $1}' | grep service)
 
     [ ${notext} ] && return 0
-    typer "\nThese are the running jobs."
-    typer "\nRunning jobs are currently backing up data.\n"
+    printf "|======================================================================|"
+    typer "\n|These are the running jobs:"
+    typer "\n|(Running jobs are currently backing up data)\n|\n"
     for x in ${running_list}; do
-        typer "$(echo "${x%.*}" | sed 's/.*s3backupCopy_//')\n"
+        typer "|> $(echo "${x%.*}" | sed 's/.*s3backupCopy_//')\n"
     done
+    printf "|======================================================================|\n\n"
 }
 
 list_active_inactive_units() {
@@ -380,27 +389,34 @@ list_active_inactive_units() {
         # These are systemd active units: they may or may not be enabled units
         # (a systemd unit can be disabled but active at the same time)
         if [[ "$(systemctl status "$(basename "${x}")")" == *"Active: active"* ]]; then
+            # This variable is global. It is set to local when calling the function outside
             actives+=($(echo "${x%.timer}" | sed 's/.*s3backupCopy_//'))
 
         # List inactive (both running and not running)
         # These are systemd inactive units: they may or may not be enabled units
         # (a systemd unit can be enabled but inactive at the same time)
     	elif [[ "$(systemctl status "$(basename "${x}")")" == *"Active: inactive"* ]]; then
+            # This variable is global. It is set to local when calling the function outside
             inactives+=($(echo "${x%.timer}" | sed 's/.*s3backupCopy_//'))
         fi
     done
 
     [ ${notext} ] && return 0
-    typer "\nThese are the active jobs."
-    typer "\nActive jobs will run periodically based on the given scheduling.\n"
+    printf "|======================================================================|"
+    typer "\n|These are the active jobs:"
+    typer "\n|(Active jobs will run periodically based on the given scheduling)\n|\n"
     for item in "${actives[@]}"; do
-        typer "${item}\n"
+        typer "|> ${item}\n"
     done
-    typer "\nThese are the inactive jobs."
-    typer "\nInactive jobs are disabled and will not run.\n"
+    printf "|======================================================================|\n\n"
+
+    printf "|======================================================================|"
+    typer "\n|These are the inactive jobs:"
+    typer "\n|(Inactive jobs are disabled and will not run)\n|\n"
     for item in "${inactives[@]}"; do
-        typer "${item}\n"
+        typer "|> ${item}\n"
     done
+    printf "|======================================================================|\n\n"
 }
 
 # Function to list all the job: active, inactive, enabled and running
@@ -481,26 +497,44 @@ stop_all_jobs() {
     read -r choice
     [ $choice = "y" ] || return 0
 
-    local running_list
-    list_running_units --notext
-    if [[ -n "${running_list}" ]]; then
-        # tell the user that some jobs are running and that the script can wait for them to finish and disable all the others
-    fi
-
     local actives
     list_active_inactive_units --notext
 
-    while [[ ${#actives[@]} -gt 0 ]]; do
-        for x in actives; do
+    if [ ${#actives[@]} -eq 0 ]; then
+        typer "\nThere are currently no active jobs.\n"
+        return 0
+    fi
+
+    local running_list
+    list_running_units --notext
+    if [[ -n "${running_list}" ]]; then
+        printf "\n"
+        list_running_units
+        typer "\nSome jobs are still running, the script can stop those which "
+        typer "are not running and will wait for the running ones.\n"
+        typer "Do you wish to continue? [y/N]: "
+        read -r choice
+        [ $choice = "y" ] || return 0
+    fi
+
+    local still_running
+    while true; do
+        still_running="false"
+        for x in "${actives[@]}"; do
             if systemctl is-active --quiet s3backupCopy_${x}.service; then
                 typer "Job \"${x}\" is currently running. Skipping for now...\n"
+                still_running="true"
             else
                 systemctl stop --quiet s3backupCopy_${x}.timer
+                typer "Job \"${x}\" stopped.\n"
             fi
         done
-        typer "\nWaiting 2 minutes before trying again...\n"
-        sleep 120
+        ${still_running} || return 0
+        unset actives
         list_active_inactive_units --notext
+        typer "\nWaiting 2 minutes before trying again...\n"
+        typer "(You can always quit with ctrl+c if you want to try later)\n"
+        sleep 120
     done
 }
 
@@ -545,9 +579,10 @@ while true; do
 3) List current jobs
 4) List current repositories
 5) Remove a job
-6) Quit
+6) Disable all jobs
+7) Quit
 DYNMENU
-    typer "Choose an option [1-6]: "
+    typer "Choose an option [1-7]: "
         read -r choice
         case $choice in
             1)
@@ -566,6 +601,9 @@ DYNMENU
              remove_job
              ;;
             6)
+             stop_all_jobs
+             ;;
+            7)
              typer "Bye!\n"
              exit
              ;;
