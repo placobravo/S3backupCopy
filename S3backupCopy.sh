@@ -372,7 +372,8 @@ list_running_units() {
     typer "\n|These are the running jobs:"
     typer "\n|(Running jobs are currently backing up data)\n|\n"
     for x in ${running_list}; do
-        typer "|> $(echo "${x%.*}" | sed 's/.*s3backupCopy_//')\n"
+        typer "|> $(echo "${x%.*}" | sed 's/.*s3backupCopy_//')"
+        typer "    ETA: $(systemctl status "${x}" | grep ETA | awk '{print $21}')\n"
     done
     printf "|======================================================================|\n\n"
 }
