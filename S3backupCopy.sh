@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 # TODO Rotate logs: Need version 1.71 onwards to use this flag --log-file-max-size -SizeSuffix
-# TODO Add next scheduling when listing active jobs
-# TODO Add how many iterations of tries have been done since starting the stop_all_jobs function
 
 ############################# FUNCTIONS #############################
 # Variables that start with underscore "_" sign are present only inside heredocs
@@ -9,7 +7,7 @@
 # Function used to make printing of text a little fancier,
 # as it being typed in real time
 typer() {
-    local speed=0.018
+    local speed=0.009
     
     while getopts "s:" flag; do
         case $flag in
@@ -163,7 +161,6 @@ create_systemd_units () {
     # fullpath_folder
     # toadd_job
     local next_run
-
 
     cat << SYSTEMDSERVICE | sed 's/^....//' > "/etc/systemd/system/s3backupCopy_${toadd_job}.service"
     [Unit]
@@ -378,6 +375,7 @@ list_running_units() {
 
 list_active_inactive_units() {
     local notext
+    local actives_timers
 
     for arg in "$@"; do
         [[ "$arg" == "--notext" ]] && notext=true
@@ -390,6 +388,11 @@ list_active_inactive_units() {
         if [[ "$(systemctl status "$(basename "${x}")")" == *"Active: active"* ]]; then
             # This variable is global. It is set to local when calling the function outside
             actives+=($(echo "${x%.timer}" | sed 's/.*s3backupCopy_//'))
+            if systemctl is-active --quiet "$(echo ${x%.timer}.service | sed 's#.*/##')"; then
+                actives_timers+=("Running")
+            else
+                actives_timers+=("$(systemctl status "$(echo ${x} | sed 's#.*/##')" | grep Trigger: | awk -F'; ' '{print $2}')")
+            fi
 
         # List inactive (both running and not running)
         # These are systemd inactive units: they may or may not be enabled units
@@ -400,12 +403,12 @@ list_active_inactive_units() {
         fi
     done
 
-    [ ${notext} ] && return 0
     printf "|======================================================================|"
     typer "\n|These are the active jobs:"
     typer "\n|(Active jobs will run periodically based on the given scheduling)\n|\n"
-    for item in "${actives[@]}"; do
-        typer "|> ${item}\n"
+    for ((y = 0; y < ${#actives[@]}; y++)); do
+        typer "|> ${actives[y]}"
+        typer "    ${actives_timers[y]}\n"
     done
     printf "|======================================================================|\n\n"
 
