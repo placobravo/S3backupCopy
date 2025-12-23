@@ -23,11 +23,11 @@ The script should be used everytime you want to add a job, remove an existing on
 You can give a custom name to the job and schedule the time. Time uses systemd timer syntax. 
 This creates the *copy_script* in ```/opt/s3backupCopy```, the corresponding systemd service unit and the systemd timer unit with the given scheduling. 
 - ***List_jobs***: list the running jobs, the enabled jobs, the active jobs and the inactive jobs.
-Running jobs are currently syncing data and waiting to finish.
-Active jobs will run periodically based on the given scheduling. Keep in mind that they may or may not be enabled.
-Inactive jobs are present in the system but they are disabled and will not run.
-Enabled jobs will become active automatically at system boot.
-Disabled jobs will not become active automatically at system boot.
+    - Running jobs are currently syncing data and waiting to finish.
+    - Active jobs will run periodically based on the given scheduling. Keep in mind that they may or may not be enabled.
+    - Inactive jobs are present in the system but they are disabled and will not run.
+    - Enabled jobs will become active automatically at system boot.
+    - Disabled jobs will not become active automatically at system boot.
 
 |     _Job_    |                  **Active**                 |                   **Inactive**                  |
 |:------------:|:-------------------------------------------:|:-----------------------------------------------:|
