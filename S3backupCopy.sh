@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 # TODO Rotate logs: Need version 1.71 onwards to use this flag --log-file-max-size -SizeSuffix
-# TODO Add do readme information about the meaning of active, inactive, enabled, disabled and running units
-# TODO Print estimated left time when listing running jobs
 # TODO Add next scheduling when listing active jobs
 # TODO Add how many iterations of tries have been done since starting the stop_all_jobs function
 
@@ -490,9 +488,9 @@ remove_job() {
     typer "Job \"${to_delete}\" removed correctly!\n"
 }
 
-# Function to stop all currently scheduled jobs
-stop_all_jobs() {
-    typer "\nThis function will stop all the active jobs."
+# Function to deactivate all currently scheduled jobs
+deactivate_all_jobs() {
+    typer "\nThis function will deactivate all the active jobs."
     typer "\nCurrently enabled jobs will be rescheduled on system reboot."
     typer "\nDo you wish to continue? [y/N]: "
     read -r choice
@@ -502,7 +500,7 @@ stop_all_jobs() {
     list_active_inactive_units --notext
 
     if [ ${#actives[@]} -eq 0 ]; then
-        typer "\nThere are currently no active jobs.\n"
+        typer "\nThere currently are no active jobs.\n"
         return 0
     fi
 
@@ -511,7 +509,7 @@ stop_all_jobs() {
     if [[ -n "${running_list}" ]]; then
         printf "\n"
         list_running_units
-        typer "\nSome jobs are still running, the script can stop those which "
+        typer "\nSome jobs are still running, the script can deactivate those which "
         typer "are not running and will wait for the running ones.\n"
         typer "Do you wish to continue? [y/N]: "
         read -r choice
@@ -527,7 +525,7 @@ stop_all_jobs() {
                 still_running="true"
             else
                 systemctl stop --quiet s3backupCopy_${x}.timer
-                typer "Job \"${x}\" stopped.\n"
+                typer "Job \"${x}\" deactivated.\n"
             fi
         done
         ${still_running} || return 0
@@ -602,7 +600,7 @@ DYNMENU
              remove_job
              ;;
             6)
-             stop_all_jobs
+             deactivate_all_jobs
              ;;
             7)
              typer "Bye!\n"
